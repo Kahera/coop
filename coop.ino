@@ -23,8 +23,8 @@ Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 RTC_DS1307 rtc;
 
 // Get wifi credentials from seperate file
-String WIFI = WIFI_SSID;
-String PASS = WIFI_PASS;
+String WIFI = String(WIFI_SSID);
+String PASS = String(WIFI_PASS);
 
 // Set up global variables
 int countTrueCommand;
@@ -52,7 +52,7 @@ void setup() {
 
   sendWifiCommand("AT", 5, "OK");
   sendWifiCommand("AT+CWMODE=1", 5, "OK");
-  sendWifiCommand("AT+CWJAP=\"" + WIFI_SSID + "\",\"" + PASS + "\"", 20, "OK");
+  sendWifiCommand("AT+CWJAP=\"" + WIFI + "\",\"" + PASS + "\"", 20, "OK");
   countTrueCommand = 0;
 }
 
@@ -139,7 +139,7 @@ void setLights(float humidity, float temperature, float heatIndex) {
 }
 
 
-void sendWifiCommand(String command, int maxTime, char readReplay[]) {
+void sendWifiCommand(String command, int maxTime, char expectedReply[]) {
   Serial.print(countTrueCommand);
   Serial.print(". at command => ");
   Serial.print(command);
@@ -149,7 +149,7 @@ void sendWifiCommand(String command, int maxTime, char readReplay[]) {
     wifi.println(command);
     
     // OK
-    if(wifi.find(readReplay)) {
+    if(wifi.find(expectedReply)) {
       found = true;
       break;
     }

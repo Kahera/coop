@@ -139,7 +139,10 @@ void setLights(float humidity, float temperature, float heatIndex) {
 }
 
 
-void sendWifiCommand(String command, int maxTime, char expectedReply[]) {
+void sendWifiCommand(String command, int maxTime, String expectedReply) {
+  char expectedReplyArray[sizeof(expectedReply)];
+  expectedReply.toCharArray(expectedReplyArray, expectedReply.length());
+
   Serial.print(countTrueCommand);
   Serial.print(". at command => ");
   Serial.print(command);
@@ -149,7 +152,7 @@ void sendWifiCommand(String command, int maxTime, char expectedReply[]) {
     wifi.println(command);
     
     // OK
-    if(wifi.find(expectedReply)) {
+    if(wifi.find(expectedReplyArray)) {
       found = true;
       break;
     }

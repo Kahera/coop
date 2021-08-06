@@ -1,11 +1,14 @@
+
 // TODO: Set up sound sensor
 // TODO: Set up time keeping with wifi
 
 #include "variables.h"          // Contains Wifi credentials
 #include <Adafruit_NeoPixel.h>  // LEDs
 #include <DHT.h>                // Humidity and temperature sensor
-#include <RTClib.h>             // Real Time Clock - clock module
 #include <SoftwareSerial.h>     // Make TX/RX of other ports -> Needed for WiFi-pins
+#include <DS1307RTC.h>          // Real Time Clock - defines RTC variable
+#include <Timezone.h>           // Handles DST - https://github.com/JChristensen/Timezone
+#include <TimeLib.h>            // 
 
 // Define pins 
 #define DHT_PIN 13
@@ -20,81 +23,153 @@
 SoftwareSerial wifi(WifiRX, WifiTX); 
 DHT dht(DHT_PIN, DHT_TYPE); 
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
-RTC_DS1307 rtc;
+//RTC_DS1307 rtc;
 
 // Get wifi credentials from seperate file
 String WIFI = String(WIFI_SSID);
 String PASS = String(WIFI_PASS);
 
 // Set up global variables
-int countTrueCommand;
 int countTimeCommand;
 boolean found = false;
 boolean dhtTrigger = false;
+
+// Time variables 
+tmElements_t time;
+const char *monthName[12] = {
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+const char *weekDay[7] = {
+  "Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"
+};
+// Timezone variables
+TimeChangeRule DST = {"CEST", First, Sun, Mar, 2, 120};
+TimeChangeRule STD = {"CET", Last, Sun, Oct, 2, 60};
+Timezone timeZone(DST, STD);
+TimeChangeRule *tcr;
+
+
 
 void setup() {
   // Start components
   Serial.begin(9600);
   wifi.begin(115200);
-  rtc.begin(); // Note: RTC is on 57600 baud
-  
   dht.begin();
   pixels.begin();
 
   // Print
   Serial.println("Coop automatization system");
 
-  // Set the RTC to the date & time this sketch was compiled
-  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  // January 21, 2014 at 3am you would call:
-  // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-  // rtc.adjust(DateTime(YYYY, M, D, h, m, s));
+  // Get time from compile and config RTC with it
+  if (getDate(__DATE__) && getTime(__TIME__)) {
+    RTC.write(time);
+  }
+  setSyncProvider(RTC.get);
 
-  sendWifiCommand("AT", 5, "OK");
-  sendWifiCommand("AT+CWMODE=1", 5, "OK");
-  sendWifiCommand("AT+CWJAP=\"" + WIFI + "\",\"" + PASS + "\"", 20, "OK");
-  countTrueCommand = 0;
+  RTC.set(now());
+  RTC.write(time);
+  // rtc.adjust(DateTime(YYYY, M, D, h, m, s));
+  setSyncProvider(RTC.get);
+
+  sendWifiCall("AT", 5, "OK");
+  sendWifiCall("AT+CWMODE=1", 5, "OK");
+  sendWifiCall("AT+CWJAP=\"" + WIFI + "\",\"" + PASS + "\"", 20, "OK");
 }
 
 void loop() {
-DateTime now = rtc.now(); 
-  
-if (now.second() % 5 == 0) {
-  if (!dhtTrigger) {
-      // *** Humidity and Temperature ***
-      // Note: Check DHT max every 2 seconds
-      float humidity = dht.readHumidity(); 
-      float temperature = dht.readTemperature(); 
-    
-      if (isnan(humidity) || isnan(temperature)) {
-        Serial.println(F("Failed to read from DHT sensor!"));
-        return;
+  // Get time
+  tmElements_t timeNow;
+  RTC.read(timeNow); 
+
+  if (timeNow.Day == 1 && timeNow.Month == 1) {
+    // Get updated time
+  }
+
+  // Trigger once a minute
+  if (timeNow.Second == 0) {
+    if (!dhtTrigger) {
+        // *** Humidity and Temperature ***
+        // Note: Check DHT max every 2 seconds
+        float humidity = dht.readHumidity(); 
+        float temperature = dht.readTemperature(); 
+      
+        if (isnan(humidity) || isnan(temperature)) {
+          Serial.println(F("Failed to read from DHT sensor!"));
+          return;
+        }
+        // Compute heat index in Celsius (isFahreheit = false)
+        float heatIndex = dht.computeHeatIndex(temperature, humidity, false);
+      
+        printValues(timeZone.toLocal(now(), &tcr), humidity, temperature, heatIndex);
+        setLights(humidity, temperature, heatIndex);
+        dhtTrigger = true;
       }
-      // Compute heat index in Celsius (isFahreheit = false)
-      float heatIndex = dht.computeHeatIndex(temperature, humidity, false);
-    
-      printValues(now, humidity, temperature, heatIndex);
-//    printValues(humidity, temperature, heatIndex);
-      setLights(humidity, temperature, heatIndex);
-    }
-  } else if (dhtTrigger) {
-      dhtTrigger = false; 
+    } else if (dhtTrigger) {
+        dhtTrigger = false; 
+  }
+
+  /* Sending a GET-call:
+    String getData = "GET /update?api_key=" + APIKEY + "&" + FIELDVALUE + "=" + String(valSensor);
+    sendWifiCommand("AT+CIPSTART=0, \"TCP\", \"" + HOST + "\"," + PORT, 15, "OK");
+    sendWifiCommand("AT+CIPSEND=0, " + String(getData.length() + 4), 4, ">");
+    wifi.println(getData);
+    delay(1500);
+    sendWifiCommand("AT+CIPCLOSE=0", 5, "OK");
+  */
+
+  // Small delay to not constantly trigger everything
+  delay(10);
 }
 
-/* Sending a GET-call:
-  String getData = "GET /update?api_key=" + APIKEY + "&" + FIELDVALUE + "=" + String(valSensor);
-  sendWifiCommand("AT+CIPSTART=0, \"TCP\", \"" + HOST + "\"," + PORT, 15, "OK");
-  sendWifiCommand("AT+CIPSEND=0, " + String(getData.length() + 4), 4, ">");
-  wifi.println(getData);
-  delay(1500);
-  sendWifiCommand("AT+CIPCLOSE=0", 5, "OK");
-*/
+
+
+//***** Utility functions *****
+
+// Starts number with leading 0 if less than 10
+void printTwoDigits(int number) {
+  if (number >= 0 && number < 10) {
+    Serial.write('0');
+  }
+  Serial.print(number);
 }
 
-void printValues(DateTime time, float humidity, float temperature, float heatIndex) {
-  char buf[] = "DDD DD/MM-YY hh:mm:ss";
-  Serial.print(time.toString(buf));
-  Serial.print(F(" - Humidity: "));
+// Gets & sets time values from string
+bool getTime(const char *str)
+{
+  int Hour, Min, Sec;
+
+  if (sscanf(str, "%d:%d:%d", &Hour, &Min, &Sec) != 3) return false;
+  time.Hour = Hour;
+  time.Minute = Min;
+  time.Second = Sec;
+  return true;
+}
+
+// Gets & sets date values from string
+bool getDate(const char *str)
+{
+  char Month[12];
+  int Day, Year;
+  uint8_t monthIndex;
+
+  if (sscanf(str, "%s %d %d", Month, &Day, &Year) != 3) return false;
+  for (monthIndex = 0; monthIndex < 12; monthIndex++) {
+    if (strcmp(Month, monthName[monthIndex]) == 0) break;
+  }
+  if (monthIndex >= 12) return false;
+  time.Day = Day;
+  time.Month = monthIndex + 1;
+  time.Year = CalendarYrToTm(Year);
+  return true;
+}
+
+// Print all values sent to function to Serial
+void printValues(time_t time, float humidity, float temperature, float heatIndex) {
+  printDateTime(time, tcr -> abbrev);
+
+  // Print other values
+  Serial.print(F("- Humidity: "));
   Serial.print(humidity);
   Serial.print(F("%  Temperature: "));
   Serial.print(temperature);
@@ -103,6 +178,51 @@ void printValues(DateTime time, float humidity, float temperature, float heatInd
   Serial.print(F("°C\n"));
 }
 
+// Format and print a time_t value, with a time zone appended.
+void printDateTime(time_t t, const char *tz)
+{
+    char buf[32]; // Buffer to store format in
+    sprintf(buf, "%s %.2d/%.2d-%d %.2d:%.2d:%.2d %s", 
+        dayShortStr(weekday(t)), day(t), month(t), year(t), hour(t), minute(t), second(t), tz);
+    Serial.println(buf);
+}
+
+// Sends wifi call - command: Full AT-command, maxTimes: #times to retry call, expectedReply: what the call should return - usually "OK"
+void sendWifiCall(String command, int maxTimes, String expectedReply) {
+  // Create char array from string to use for wifi.find
+  char expectedReplyArray[sizeof(expectedReply)];
+  expectedReply.toCharArray(expectedReplyArray, expectedReply.length());
+
+  // Print command being sent
+  Serial.print("Command: ");
+  Serial.print(command);
+  Serial.print(" ");
+  while (countTimeCommand <= maxTimes) {
+    // AT+CIPSEND
+    wifi.println(command);
+    
+    // OK
+    if(wifi.find(expectedReplyArray)) {
+      found = true;
+      break;
+    }
+  
+    countTimeCommand++;
+  }
+  
+  // Check if found after maxTimes
+  if (found) {
+    Serial.println("- Success!");
+  } else {
+    Serial.println("- Fail...");
+  }
+  
+  // Reset check variables
+  countTimeCommand = 0;
+  found = false;
+ }
+
+// Sets colors of lights based on input
 void setLights(float humidity, float temperature, float heatIndex) {
   pixels.clear();
 
@@ -138,39 +258,3 @@ void setLights(float humidity, float temperature, float heatIndex) {
   pixels.show();
 }
 
-
-void sendWifiCommand(String command, int maxTime, String expectedReply) {
-  char expectedReplyArray[sizeof(expectedReply)];
-  expectedReply.toCharArray(expectedReplyArray, expectedReply.length());
-
-  Serial.print(countTrueCommand);
-  Serial.print(". at command => ");
-  Serial.print(command);
-  Serial.print(" ");
-  while (countTimeCommand <= maxTime) {
-    // AT+CIPSEND
-    wifi.println(command);
-    
-    // OK
-    if(wifi.find(expectedReplyArray)) {
-      found = true;
-      break;
-    }
-  
-    countTimeCommand++;
-  }
-  
-  if(found == true){
-    Serial.println("- Success!");
-    countTrueCommand++;
-    countTimeCommand = 0;
-  }
-  
-  if(found == false){
-    Serial.println("- Fail...");
-    countTrueCommand = 0;
-    countTimeCommand = 0;
-  }
-  
-  found = false;
- }

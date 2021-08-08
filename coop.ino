@@ -1,6 +1,7 @@
-
+// TODO: Figure out expected response for time
 // TODO: Set up sound sensor
 // TODO: Set up time keeping with wifi
+// TODO: Set up motor
 
 #include "variables.h"          // Contains Wifi credentials
 #include <Adafruit_NeoPixel.h>  // LEDs
@@ -35,7 +36,6 @@ boolean found = false;
 boolean dhtTrigger = false;
 
 // Time variables 
-tmElements_t time;
 const char *monthName[12] = {
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -43,18 +43,17 @@ const char *monthName[12] = {
 const char *weekDay[7] = {
   "Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"
 };
-// Timezone variables
+tmElements_t time;
 TimeChangeRule DST = {"CEST", First, Sun, Mar, 2, 120};
 TimeChangeRule STD = {"CET", Last, Sun, Oct, 2, 60};
 Timezone timeZone(DST, STD);
 TimeChangeRule *tcr;
 
 
-
 void setup() {
   // Start components
   Serial.begin(9600);
-  wifi.begin(115200);
+  wifi.begin(9600); //115200
   dht.begin();
   pixels.begin();
 
@@ -63,18 +62,34 @@ void setup() {
 
   // Get time from compile and config RTC with it
   if (getDate(__DATE__) && getTime(__TIME__)) {
+    // Convert to time_t variable to remove offset from compile time to get UTC
+    time_t utc = timeZone.toUTC(makeTime(time));
+    // Convert back to tmElements_t variable to write to RTC.
+    breakTime(utc, time);
+
+    // Write UTC to RTC
     RTC.write(time);
   }
+  // Set RTC as time provider for Arduino 
   setSyncProvider(RTC.get);
 
-  RTC.set(now());
-  RTC.write(time);
-  // rtc.adjust(DateTime(YYYY, M, D, h, m, s));
-  setSyncProvider(RTC.get);
+  // Set baud rate of wifi-chip to 9600 once
+  // But beware: https://arduino.stackexchange.com/questions/24156/how-to-change-baudrate-of-esp8266-12e-permanently
+  // sendWifiCall("AT+CIOBAUD=9600", 5, "OK");
+  // sendWifiCall("AT+IPR=9600", 5, "OK");
 
+
+  // Check that Wifi-module is avaliable
   sendWifiCall("AT", 5, "OK");
+  // Set Wifi-mode to client
   sendWifiCall("AT+CWMODE=1", 5, "OK");
+  // Connect to wifi
   sendWifiCall("AT+CWJAP=\"" + WIFI + "\",\"" + PASS + "\"", 20, "OK");
+  // Configure NTP server to get time in UTC
+  // AT+CIPSNTPCFG=<enable>,<timezone>[,<SNTP server1>,<SNTP server2>,<SNTP server3>]
+  sendWifiCall("AT+CIPSNTPCFG=1,0,\"0.no.pool.ntp.org\",\"cn.ntp.org.cn\",\"ntp.sjtu.edu.cn\"", 10, "OK");
+  // Get NTP time
+  sendWifiCall("AT+CIPSNTPTIME", 10, "OK");
 }
 
 void loop() {
@@ -86,8 +101,8 @@ void loop() {
     // Get updated time
   }
 
-  // Trigger once a minute
-  if (timeNow.Second == 0) {
+  // Trigger once a minute, while assuring delays don't skip the trigger
+  if (timeNow.Second > 3) {
     if (!dhtTrigger) {
         // *** Humidity and Temperature ***
         // Note: Check DHT max every 2 seconds
@@ -119,7 +134,7 @@ void loop() {
   */
 
   // Small delay to not constantly trigger everything
-  delay(10);
+  //delay(10);
 }
 
 
@@ -169,7 +184,7 @@ void printValues(time_t time, float humidity, float temperature, float heatIndex
   printDateTime(time, tcr -> abbrev);
 
   // Print other values
-  Serial.print(F("- Humidity: "));
+  Serial.print(F(" - Humidity: "));
   Serial.print(humidity);
   Serial.print(F("%  Temperature: "));
   Serial.print(temperature);
@@ -184,7 +199,7 @@ void printDateTime(time_t t, const char *tz)
     char buf[32]; // Buffer to store format in
     sprintf(buf, "%s %.2d/%.2d-%d %.2d:%.2d:%.2d %s", 
         dayShortStr(weekday(t)), day(t), month(t), year(t), hour(t), minute(t), second(t), tz);
-    Serial.println(buf);
+    Serial.print(buf);
 }
 
 // Sends wifi call - command: Full AT-command, maxTimes: #times to retry call, expectedReply: what the call should return - usually "OK"
@@ -197,13 +212,25 @@ void sendWifiCall(String command, int maxTimes, String expectedReply) {
   Serial.print("Command: ");
   Serial.print(command);
   Serial.print(" ");
+
+  String response = "";
+
   while (countTimeCommand <= maxTimes) {
-    // AT+CIPSEND
+    // Send command (equals AT+CIPSEND)
     wifi.println(command);
-    
+
+    while (wifi.available()) {
+      char c = char(wifi.read());
+      response.concat(c);
+      delay(1);
+    }
+
+    Serial.print(response);
+
     // OK
-    if(wifi.find(expectedReplyArray)) {
-      found = true;
+    found = wifi.find(expectedReplyArray);
+    if (found) {
+      Serial.println("- Success!");
       break;
     }
   
@@ -211,9 +238,7 @@ void sendWifiCall(String command, int maxTimes, String expectedReply) {
   }
   
   // Check if found after maxTimes
-  if (found) {
-    Serial.println("- Success!");
-  } else {
+  if (!found) {
     Serial.println("- Fail...");
   }
   
